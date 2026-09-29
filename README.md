@@ -1,9 +1,6 @@
 # Open RAG From Scratch
 
-Build a retrieval-augmented generation (RAG) system from the ground up, using only open, self-hostable tools.
-No cloud account, no API keys, no LangChain — everything runs locally.
-
-The whole idea fits on one line:
+A from-scratch walkthrough of retrieval-augmented generation (RAG), built with open, self-hostable tools and run entirely on your own machine.
 
 ```
 INDEX (offline)     load → split → embed → store
@@ -11,22 +8,20 @@ RETRIEVE (query)    embed query → similarity search → top-k chunks
 GENERATE (query)    prompt template + context → LLM → answer
 ```
 
-## What you get
+## Read the guide
+
+The full theory guide (Parts 1–4, with diagrams) is published as a website:
+
+**→ https://itsmusa.github.io/open-rag/**
+
+## What's in this repo
 
 | What | Where |
 |---|---|
-| Theory guide, Parts 1–4 | [`docs/theory.md`](docs/theory.md) |
-| The runnable implementation | [`notebooks/open_rag_from_scratch_1_to_4.ipynb`](notebooks/open_rag_from_scratch_1_to_4.ipynb) |
-
-## How to follow this
-
-1. **Read the theory first** — [`docs/theory.md`](docs/theory.md) walks through the four parts in plain language,
-   with diagrams and worked examples. No code required.
-2. **Then run the notebook** — [`notebooks/open_rag_from_scratch_1_to_4.ipynb`](notebooks/open_rag_from_scratch_1_to_4.ipynb)
-   builds the same chain the theory describes, one cell at a time. Each markdown cell explains one idea; the code
-   cell below it does exactly that and prints the result. Run one cell, look at what it produced, read on.
-3. **Refer back** — the notebook deliberately mirrors the theory's structure, so when a cell is confusing the
-   matching theory section is one link away.
+| The guide (website source) | [`docs/`](docs/) |
+| Images used by the guide | [`docs/assets/`](docs/assets/) |
+| The runnable implementation | [`notebooks/`](notebooks/) |
+| Dependencies | [`requirements.txt`](requirements.txt) |
 
 ## Setup
 
@@ -41,18 +36,7 @@ python -m venv .venv
 # source .venv/bin/activate   # macOS / Linux
 
 pip install -r requirements.txt
-```
-
-Then pull the generation model:
-
-```bash
 ollama pull gpt-oss:20b
-```
-
-Start the notebook with a local kernel (needed for the local `ollama` runtime) and run it top to bottom:
-
-```bash
-jupyter notebook notebooks/open_rag_from_scratch_1_to_4.ipynb
 ```
 
 ## The stack

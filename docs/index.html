@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open RAG From Scratch — Theory</title>
+<meta name="description" content="Retrieval-augmented generation explained from scratch: indexing, retrieval and generation, using only open, self-hostable tools.">
+<link rel="stylesheet" href="style.css">
+<script src="app.js"></script>
+</head>
+<body>
+
+<nav class="topbar">
+  <a class="brand" href="index.html">Open RAG From Scratch</a>
+  <button class="theme-btn" id="theme-toggle" type="button">Light</button>
+</nav>
+
+<div class="wrap">
+
+<header class="top">
+  <h1>RAG From Scratch — Theory</h1>
+  <p class="sub">Parts 1–4 explained in plain language, with diagrams and worked examples.</p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#problem">Why RAG</a>
+  <a href="#jobs">Two jobs</a>
+  <a href="#bigpicture">Big picture</a>
+  <a href="#p1">Part 1 · Overview</a>
+  <a href="#p2">Part 2 · Indexing</a>
+  <a href="#p3">Part 3 · Retrieval</a>
+  <a href="#p4">Part 4 · Generation</a>
+  <a href="#params">Parameters</a>
+  <a href="#gotchas">Gotchas</a>
+  <a href="#glossary">Glossary</a>
+</nav>
+
+<p class="lead">
+  <strong>RAG</strong> stands for <em>Retrieval-Augmented Generation</em>. The idea is simple: a language
+  model is only as good as what it has already read, and it has only read what it was trained on. RAG lets it
+  answer from <em>your</em> documents instead — you keep your text in a form that can be searched, find the
+  parts that matter for a question, and hand those parts to the model as context. The model then writes an
+  answer grounded in that text rather than in its memory.
+</p>
+
+<p>
+  The rest of this document builds that idea up in four parts, one piece at a time: first a bird's-eye view of
+  the whole chain, then indexing, then retrieval, then generation. Each section stays close to the ground, with
+  a diagram and an example, so the reasoning is easy to follow even if you have never built one before.
+</p>
+
+<h2 id="problem">Why RAG exists</h2>
+
+<p>
+  Before learning <em>how</em> RAG works, it helps to understand the problem it was invented to solve. A
+  language model's knowledge is fixed the moment its training ends. Everything it "knows" is baked into its
+  weights as a compressed, statistical impression of the text it saw — and that leads to four problems you meet
+  almost immediately in real use.
+</p>
+
+<div class="grid2">
+  <div class="card">
+    <h4>Stale knowledge</h4>
+    <p>The model has no idea anything was published after its training cut-off. Ask about a change made last week and it simply cannot know.</p>
+  </div>
+  <div class="card">
+    <h4>No private data</h4>
+    <p>It has never seen your notes, tickets, contracts or internal documentation. That information exists only in your systems, not in its weights.</p>
+  </div>
+  <div class="card">
+    <h4>Confident guessing</h4>
+    <p>When it doesn't know, it rarely says so. It produces something plausible-sounding instead — a "hallucination" that reads as fluently as a fact.</p>
+  </div>
+  <div class="card">
+    <h4>No sources</h4>
+    <p>Even when the answer is right, there is no way to check where it came from. You cannot trace the claim back to a document.</p>
+  </div>
+</div>
+
+<p>
+  You might wonder why we don't simply teach the model new facts by fine-tuning it. Fine-tuning is good at
+  shaping <em>style and form</em> — how the model writes, the tone it takes, the format it follows. But it is a
+  poor tool for <em>facts</em>. It is slow and expensive to repeat, it cannot cite where an answer came from,
+  and every time a single document changes you would have to retrain. RAG takes the opposite approach: leave
+  the model as it is, and give it the right text at the moment it answers. Updating knowledge becomes as cheap
+  as re-indexing one file, and the answer can point straight back at the text it used.
+</p>
+
+<h2 id="jobs">Two jobs: indexing and serving</h2>
+
+<p>
+  One of the most useful mental models in RAG is that there are really two separate jobs, running at different
+  times, sharing a single store. The first job, <strong>indexing</strong>, runs once over all of your documents
+  and prepares them to be searched. The second job, <strong>serving</strong>, runs every time someone asks a
+  question: it searches what indexing prepared and produces an answer.
+</p>
+
+<p>
+  Keeping these apart matters because they have very different constraints. Indexing can take minutes or hours —
+  it is a batch job you run in the background. Serving, by contrast, happens while a person waits, so it has to
+  be fast. Both halves meet at one place: the vector store, which indexing writes to and serving reads from.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node dark">INDEXING<br><small>runs once, over all your documents</small></span>
+    <span class="arw" aria-hidden="true">&#8596;</span>
+    <span class="node">SERVING<br><small>runs every time a question is asked</small></span>
+  </div>
+  <figcaption>The two halves never call each other directly — they communicate through the vector store.</figcaption>
+</figure>
+
+<table>
+  <thead>
+    <tr><th></th><th>Indexing</th><th>Serving</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>When</td><td>Offline, ahead of time</td><td>Online, per question</td></tr>
+    <tr><td>Input</td><td>All your documents</td><td>One question</td></tr>
+    <tr><td>Output</td><td>A searchable store</td><td>One answer</td></tr>
+    <tr><td>Steps</td><td>load &rarr; split &rarr; embed &rarr; store</td><td>embed &rarr; retrieve &rarr; generate</td></tr>
+    <tr><td>Speed</td><td>Can be slow (batch)</td><td>Must be fast (interactive)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="bigpicture">The big picture</h2>
+
+<p>
+  Put the two jobs together and you get the three phases that every RAG system shares. <strong>Index</strong>
+  prepares the documents. <strong>Retrieve</strong> finds the parts relevant to a question. <strong>Generate</strong>
+  turns those parts into an answer. The first phase happens once and offline; the other two happen together,
+  live, for every question.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node dark">1. INDEX</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">2. RETRIEVE</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">3. GENERATE</span>
+  </div>
+  <figcaption>One line that tells the whole story. Parts 2, 3 and 4 take each phase in turn.</figcaption>
+</figure>
+
+<img class="art" src="assets/rag_landscape.png" alt="The RAG landscape map">
+<p class="imgcap">The RAG landscape — we build the backbone: <em>index &rarr; retrieve &rarr; generate</em>.</p>
+
+<div class="divider">&#8226;&#8226;&#8226;</div>
+
+<h2 id="p1">Part 1 — Overview (the whole chain at once)</h2>
+
+<p>
+  Before taking the system apart, it is worth seeing its shape whole. Part 1 runs the entire chain in a single
+  pass, from a document to an answer, without worrying about the details of any one step. The point is to fix
+  the overall picture in your mind before zooming in.
+</p>
+
+<p>
+  Read left to right, the chain is five small verbs. We load a document, split it into manageable pieces, turn
+  those pieces into searchable form and store them, ask a question, and get an answer. That is the whole of RAG;
+  everything else in this document is just a closer look at one of those verbs.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node">load a document</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">split into chunks</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">embed + store</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">ask a question</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">answer</span>
+  </div>
+  <figcaption>In code, all five steps collapse into one plain function: <code>rag(question)</code>.</figcaption>
+</figure>
+
+<p>
+  If you look inside that function, only two things are really happening at answer time: it finds the relevant
+  chunks, and it asks the model to answer using them. The first three verbs — loading, splitting and storing —
+  are preparation that happens once. The last two are the live part that runs per question.
+</p>
+
+<h3 id="env"><span class="n">&#183;</span>Environment</h3>
+
+<p>
+  Nothing here needs a cloud account or an API key. You install a handful of packages once and run a language
+  model locally on your own machine. That keeps the whole pipeline self-contained and reproducible.
+</p>
+
+<pre><code>pip install requests trafilatura chonkie sentence-transformers chromadb ollama jinja2</code></pre>
+
+<div class="ex">
+  <span class="tag">Running example</span>
+  <p>
+    To keep the ideas concrete, this document uses one example throughout. We index a single blog post and then
+    ask the question <em>&ldquo;What is Task Decomposition?&rdquo;</em> A good answer should be built only from
+    the parts of that post we retrieved — nothing fetched from the model's general memory. Each section below
+    quietly feeds this same example, so by the end you have watched it come together step by step.
+  </p>
+</div>
+
+<div class="divider">&#8226;&#8226;&#8226;</div>
+
+<h2 id="p2">Part 2 — Indexing</h2>
+
+<img class="art" src="assets/indexing.png" alt="Indexing diagram">
+<p class="imgcap">Indexing: documents are split, embedded, and stored.</p>
+
+<p>
+  Indexing is the preparation stage. Its goal is simple to state: take your raw documents and turn them into
+  something that can be searched by meaning, quickly and reliably. It runs ahead of time — usually as a batch
+  job — so that when a real question arrives later, the system does not have to touch the original documents at
+  all. It only has to search the prepared store.
+</p>
+
+<p>
+  Indexing is itself four steps, and each one solves a specific problem. We <strong>load</strong> the raw text
+  and clean it. We <strong>split</strong> it into chunks small enough to work with. We <strong>embed</strong>
+  each chunk into numbers that capture its meaning. And we <strong>store</strong> those numbers so they can be
+  looked up later. The next seven sections walk through them, beginning with the most basic ingredient of all:
+  the document itself.
+</p>
+
+<h3 id="p2-1"><span class="n">2.1</span>Documents</h3>
+
+<p>
+  A &ldquo;document&rdquo; is just the raw text you want the system to know about. It can arrive from almost
+  anywhere — a web page, a markdown file, a PDF, a support ticket, a row in a database. At this stage we don't
+  care about its format or meaning; we care that it is <strong>text, plus a little metadata</strong> describing
+  where it came from. That metadata might be a URL, a title, a file name, or a date.
+</p>
+
+<p>
+  It is worth separating two words that are easy to confuse. A <strong>document</strong> is the whole thing —
+  the entire page or file. A <strong>chunk</strong> is a piece of it, which we will create in a moment. We keep
+  both: the searchable store indexes chunks, but each chunk remembers which document it came from, so a final
+  answer can point back to its source.
+</p>
+
+<div class="ex">
+  <span class="tag">Example</span>
+  <p>In the smallest possible case, a document is a single sentence, and a question is a single sentence too:</p>
+  <p>question&nbsp;=&nbsp;<em>&ldquo;What kinds of pets do I like?&rdquo;</em><br>
+     document&nbsp;=&nbsp;<em>&ldquo;My favorite pet is a cat.&rdquo;</em></p>
+  <p>With just these two lines we can demonstrate every step from here to an answer, without the noise of real documents getting in the way.</p>
+</div>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node dark">raw text (your source)</span>
+    <span class="arw" aria-hidden="true">&darr;</span>
+    <span class="node">a document + metadata</span>
+  </div>
+</figure>
+
+<h3 id="p2-2"><span class="n">2.2</span>Token counting</h3>
+
+<p>
+  Here is a fact that surprises most people: language models don't read characters, and they don't read whole
+  words either. They read <strong>tokens</strong>, which are pieces of words. A short common word like &ldquo;cat&rdquo;
+  is one token; a longer or rarer word might be split into two or three. Even punctuation gets its own token.
+  Counting tokens is how we measure text in the units the model actually understands.
+</p>
+
+<p>
+  That count matters for three practical reasons. First, every model has a <strong>context window</strong> — a
+  maximum amount of text it can take in at once — and the prompt, the retrieved context and the answer all have
+  to fit inside it together. Second, chunks are measured in tokens, so the count is what lets us size them
+  sensibly. Third, tokens translate directly into speed and, on paid runtimes, cost: more tokens per request
+  means slower answers.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">&ldquo;My favorite pet is a cat.&rdquo;</span>
+    <span class="arw" aria-hidden="true">&darr; count</span>
+    <div class="chips">
+      <span class="chip">My</span><span class="chip">favorite</span><span class="chip">pet</span>
+      <span class="chip">is</span><span class="chip">a</span><span class="chip">cat</span><span class="chip">.</span>
+    </div>
+    <span class="node light">= 7 tokens</span>
+  </div>
+</figure>
+
+<div class="note"><strong>Use the model's own tokenizer.</strong> A token count is only correct for the tokenizer
+that produced it. Count with a different model's tokenizer and you will mis-size chunks and mis-estimate how much
+room is left in the context window.</div>
+
+<div class="ex">
+  <span class="tag">Example</span>
+  <p>
+    As a rough rule of thumb, one token is about four characters of English, so a thousand characters is roughly
+    250 tokens. That is fine for a quick mental estimate, but before anything is sized for real, confirm the
+    count with the actual tokenizer of the model you will use.
+  </p>
+</div>
+
+<h3 id="p2-3"><span class="n">2.3</span>Embeddings</h3>
+
+<p>
+  An <strong>embedding</strong> is the trick that makes search work by meaning rather than by matching exact
+  words. It turns a piece of text into a list of numbers — a vector — that captures what the text is about.
+  Texts with similar meaning end up as nearby vectors, even when they share no words at all. This is why a
+  search for &ldquo;how do I do X&rdquo; can find a passage that talks about X without ever using the phrase.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">&ldquo;What is Task Decomposition?&rdquo;</span>
+    <span class="arw" aria-hidden="true">&darr; embed</span>
+    <span class="vec">[0.021, -0.134, 0.887, 0.045, &hellip; 1024 numbers]</span>
+  </div>
+  <figcaption>Each piece of text becomes a fixed-length vector — here, <strong>1024 numbers</strong>.</figcaption>
+</figure>
+
+<p>
+  A few properties are worth knowing before you rely on embeddings. Every model produces a vector of a fixed
+  length — this one always gives 1024 numbers — and that length is a property of the model. Different models
+  give different lengths, and crucially, their vectors are <em>not</em> interchangeable: you cannot embed with
+  one model and search against vectors made by another. Vectors are usually scaled to length one
+  (&ldquo;normalised&rdquo;), which makes comparing them simple and stable. During indexing you embed many
+  chunks in a batch; at answer time you embed just the one question. And because these models are relatively
+  small, they run comfortably on a CPU, with a GPU only speeding up a large indexing run.
+</p>
+
+<div class="note"><code>SentenceTransformer("Qwen/Qwen3-Embedding-0.6B").encode(texts)</code> — runs locally, on CPU or GPU.</div>
+
+<h3 id="p2-4"><span class="n">2.4</span>Cosine similarity</h3>
+
+<p>
+  Once text is numbers, comparing two pieces of text becomes a matter of comparing two vectors. The standard
+  way to do that for text is <strong>cosine similarity</strong>, which measures the <em>angle</em> between the
+  vectors. It deliberately ignores how long each vector is and cares only about the direction it points, which
+  turns out to suit language very well: two texts about the same idea point the same way, regardless of whether
+  one is a short phrase and the other a long paragraph.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">vector A (question)</span>
+    <span class="arw" aria-hidden="true">&darr; compare</span>
+    <span class="node">vector B (document)</span>
+    <span class="arw" aria-hidden="true">&darr;</span>
+    <span class="node light">score &asymp; 1.0 &rarr; closely related</span>
+  </div>
+</figure>
+
+<p>
+  The score runs from <code>1</code>, meaning the vectors point exactly the same way and the texts are
+  essentially identical in meaning, down toward <code>0</code> for unrelated texts. In practice the useful
+  signal lives in a fairly narrow band at the top.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Score</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="mono">1.0</td><td>Same direction — nearly identical meaning</td></tr>
+    <tr><td class="mono">~0.7–0.9</td><td>Clearly related</td></tr>
+    <tr><td class="mono">~0.3–0.6</td><td>Loosely related</td></tr>
+    <tr><td class="mono">~0.0</td><td>Unrelated</td></tr>
+  </tbody>
+</table>
+
+<div class="ex">
+  <span class="tag">Example</span>
+  <p>
+    Comparing the embedding of the question with the embedding of the document gives a high score, because they
+    are about the same thing. A sentence about cooking would score far lower. That gap is exactly what retrieval
+    exploits: the chunks with the highest scores are the ones most likely to answer the question.
+  </p>
+</div>
+
+<h3 id="p2-5"><span class="n">2.5</span>Document loaders</h3>
+
+<p>
+  Real sources are messy. A web page is mostly menus, adverts, cookie banners, navigation and footers wrapped
+  around a small core of actual article text. If you embed all of that noise, you pollute the store with
+  irrelevant material and dilute the answers. A <strong>loader</strong> exists to prevent that: it fetches the
+  source and keeps only the meaningful text.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node">URL</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node dark">raw HTML</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">strip nav / ads</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">clean article text</span>
+  </div>
+</figure>
+
+<p>
+  A good loader does three things. It extracts the main content and drops the boilerplate. It attaches metadata
+  — the source URL or file name, a title, perhaps a date — which will be carried forward onto every chunk so
+  answers can cite their origin. And it normalises whitespace and encoding, so the same text always looks the
+  same no matter how it arrived.
+</p>
+
+<div class="note"><code>trafilatura.extract(requests.get(url).text)</code> — fetches a page and automatically keeps only the main article.</div>
+
+<h3 id="p2-6"><span class="n">2.6</span>Splitting (chunking)</h3>
+
+<p>
+  Long documents have to be broken into smaller pieces, called <strong>chunks</strong>. This is not a cosmetic
+  step — the chunk is the unit that gets embedded, retrieved and handed to the model, so where you draw its
+  boundaries shapes everything downstream. We split for three reasons.
+</p>
+
+<p>
+  First, <strong>precision</strong>. A small, focused chunk that genuinely matches the question beats a whole
+  page that only sort of matches, because the model is handed less irrelevant text to wade through. Second,
+  <strong>fit</strong>: chunks must be able to sit inside the model's context window alongside the prompt.
+  Third, boundaries themselves can do harm, so chunks usually <strong>overlap</strong> slightly. A sentence
+  that happens to fall on a cut can otherwise be split in half and lose its meaning; a small overlap keeps that
+  context intact.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">one long article</span>
+    <span class="arw" aria-hidden="true">&darr; split</span>
+    <div class="chips">
+      <span class="chip">chunk 1</span><span class="chip">chunk 2</span><span class="chip">chunk 3</span>
+      <span class="chip">chunk 4</span><span class="chip">&hellip;</span>
+    </div>
+  </div>
+  <figcaption>e.g. <code>chunk_size = 300</code> tokens, <code>chunk_overlap = 50</code></figcaption>
+</figure>
+
+<p>
+  Chunk size is a trade-off, and it is worth internalising. Small chunks give precise matches but may leave out
+  the surrounding context needed to understand them. Large chunks carry more context but dilute relevance and
+  eat into the context window. There is no universal best size; it depends on your documents, so it is a
+  parameter you tune.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Chunk size</th><th>Good</th><th>Bad</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Small</td><td>Precise matches</td><td>May miss surrounding context</td></tr>
+    <tr><td>Large</td><td>More context per chunk</td><td>Dilutes relevance, wastes window</td></tr>
+  </tbody>
+</table>
+
+<div class="note">chonkie&rsquo;s <code>RecursiveChunker</code> splits by <strong>tokens</strong> using the model's
+tokenizer, trying paragraph, then sentence, then word boundaries before resorting to a hard cut.</div>
+
+<h3 id="p2-7"><span class="n">2.7</span>Vector store</h3>
+
+<p>
+  The last step of indexing is to save the results. A <strong>vector store</strong> holds each chunk together
+  with its vector, so that later we can ask a simple question of it: which chunks are closest to this new
+  question? Think of it as a library you build out of your own documents, organised by meaning rather than
+  alphabet.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">chunk + vector</span>
+    <span class="arw" aria-hidden="true">&darr; store</span>
+    <span class="node dark">vector store</span>
+  </div>
+  <figcaption>Later: store the question's vector too, and find nearest neighbours.</figcaption>
+</figure>
+
+<table>
+  <thead>
+    <tr><th>id</th><th>chunk (text)</th><th>vector</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="mono">doc:0</td><td>&ldquo;Task decomposition is&hellip;&rdquo;</td><td class="vec">[0.02, -0.13, &hellip;]</td></tr>
+    <tr><td class="mono">doc:1</td><td>&ldquo;ReAct combines reasoning&hellip;&rdquo;</td><td class="vec">[0.41, 0.08, &hellip;]</td></tr>
+    <tr><td class="mono">doc:2</td><td>&ldquo;Memory keeps context&hellip;&rdquo;</td><td class="vec">[-0.22, 0.55, &hellip;]</td></tr>
+  </tbody>
+</table>
+
+<p>
+  A few details make a vector store pleasant to live with. Searching for the nearest vectors is done with a
+  structure built for it — often something called HNSW — so it stays fast even with many chunks, rather than
+  comparing the query against every vector one by one. You can filter by metadata, for instance to search only
+  within one file. Chunks are stored under <strong>stable ids</strong>, derived from the source and position,
+  so that re-running indexing updates existing entries instead of creating duplicates. And the store is
+  <strong>persistent</strong>: it lives on disk, so you don't rebuild it every time you start the program.
+</p>
+
+<div class="note"><code>chromadb.PersistentClient</code> &rarr; <code>collection.add(ids, documents, embeddings, metadatas)</code>.</div>
+
+<div class="divider">&#8226;&#8226;&#8226;</div>
+
+<h2 id="p3">Part 3 — Retrieval</h2>
+
+<p>
+  With the store built, we reach the live half of the system. Retrieval answers a single question: <em>which
+  chunks are most relevant to what was just asked?</em> The method is the same idea we used to build the store,
+  run in reverse. We embed the question with the same embedding model, then look for the chunks whose vectors
+  are nearest to the question's vector. The handful of closest chunks — the &ldquo;top-k&rdquo; — are what get
+  passed on.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node">question</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">embed</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">nearest-neighbour search</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">top-k chunks</span>
+  </div>
+  <figcaption><code>collection.query(query_embeddings=[&hellip;], n_results=k)</code></figcaption>
+</figure>
+
+<p>
+  The one number to choose here is <code>k</code> — how many chunks to retrieve. It is a genuine trade-off.
+  Retrieve too few and the correct chunk may never make it into the context, making a good answer impossible.
+  Retrieve too many and you flood the model with loosely related text, which dilutes the signal and crowds the
+  context window.
+</p>
+
+<table>
+  <thead>
+    <tr><th>k</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Too small (1–2)</td><td>Fast, but risks missing the answer</td></tr>
+    <tr><td>Balanced (4–6)</td><td>Usually the sweet spot</td></tr>
+    <tr><td>Too large</td><td>Adds noise and fills the context window</td></tr>
+  </tbody>
+</table>
+
+<div class="ex">
+  <span class="tag">Example</span>
+  <p>
+    Asking <em>&ldquo;What is Task Decomposition?&rdquo;</em> with <code>k=1</code> returns the single most relevant chunk.
+    Raising it to <code>k=5</code> gives the model several chunks to draw on, which often helps when an answer
+    is spread across more than one passage.
+  </p>
+</div>
+
+<div class="note"><strong>Retrieval is the heart of RAG.</strong> No model can produce a correct answer if the
+right chunk never reaches it. In practice, most improvements in answer quality come from better retrieval —
+better chunks, a better embedding model, a better <code>k</code> — rather than from a larger language model.</div>
+
+<p>
+  The retrieved chunks are then gathered together, usually reordered with the most relevant first and trimmed to
+  fit the token budget, before being passed to the final stage.
+</p>
+
+<h2 id="p4">Part 4 — Generation</h2>
+
+<img class="art" src="assets/generation.png" alt="Generation diagram">
+<p class="imgcap">Generation: retrieved context plus the question go into the model.</p>
+
+<p>
+  This is the stage that gives RAG its name. The chunks retrieved in Part 3 are placed into a
+  <strong>prompt</strong> alongside the question, and the language model writes an answer <em>from that
+  context</em>. This is the &ldquo;Generation&rdquo; in Retrieval-Augmented Generation, and it is what makes
+  the answer grounded: the model is now working from your documents rather than reaching into its memory.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">retrieved context</span>
+    <span class="arw" aria-hidden="true">+</span>
+    <span class="node">question</span>
+    <span class="arw" aria-hidden="true">&darr; prompt template</span>
+    <span class="node">&ldquo;Answer only from the context&hellip;&rdquo;</span>
+    <span class="arw" aria-hidden="true">&darr; LLM</span>
+    <span class="node light">answer</span>
+  </div>
+</figure>
+
+<p>
+  Most of the craft in this stage lives in the prompt. A good one asks for three things. It asks the model to
+  <strong>ground</strong> itself — &ldquo;answer only from the context&rdquo; — which reduces invented facts. It
+  asks for <strong>citations</strong> — &ldquo;point to the source of each claim&rdquo; — which makes answers
+  checkable. And it gives the model permission to be honest: &ldquo;if the context does not contain the answer,
+  say so&rdquo;. That last instruction is easy to forget and quietly prevents a lot of confident nonsense.
+</p>
+
+<h4>Settings that matter at generation time</h4>
+
+<p>
+  A few parameters shape the output. Temperature controls randomness — at zero the model is focused and
+  repeatable, and higher values make it more varied (though even at zero, it is not perfectly deterministic). A
+  cap on answer length both keeps replies concise and reserves room in the context window. And the context
+  window itself is the total budget shared by the prompt, the context and the answer; its size depends on the
+  model, so it is worth checking rather than assuming.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Setting</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>temperature</td><td>0 = focused and repeatable; higher = more varied (not fully deterministic)</td></tr>
+    <tr><td>max answer tokens</td><td>Caps answer length and reserves space in the context window</td></tr>
+    <tr><td>context window</td><td>Total budget for prompt + context + answer; verify per model</td></tr>
+  </tbody>
+</table>
+
+<div class="ex">
+  <span class="tag">Example prompt</span>
+  <p><em>&ldquo;Answer the question based only on the following context: {context}. Question: {question}&rdquo;</em></p>
+  <p>The retrieved chunks fill <code>{context}</code>, the user's question fills <code>{question}</code>, and the model's reply is the answer.</p>
+</div>
+
+<div class="note">The prompt is built from a Jinja2 template and generation runs through a local model with
+<code>ollama.chat(model="gpt-oss:20b", messages=[&hellip;])</code> — both wrapped up in one plain <code>rag(question)</code>
+function.</div>
+
+<div class="divider">&#8226;&#8226;&#8226;</div>
+
+<h2 id="end">End to end</h2>
+
+<p>
+  It is worth seeing the whole thing in one view now that each piece has been explained. Indexing runs once
+  along the top, turning documents into a store. Then, for each question, the flow drops into the serving half
+  along the bottom: embed the question, retrieve the nearest chunks, build the prompt, and generate the answer.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node dark">documents</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node dark">chunks</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node dark">vectors</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node dark">store</span>
+  </div>
+  <div class="divider" style="margin:18px 0">&darr; question enters here &darr;</div>
+  <div class="flow">
+    <span class="node">embed question</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">top-k chunks</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">prompt</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">LLM answer</span>
+  </div>
+  <figcaption>Index once at the top; retrieve and generate for every question.</figcaption>
+</figure>
+
+<div class="ex">
+  <span class="tag">The running example, start to finish</span>
+  <ol>
+    <li>Load the blog post and clean it down to its main text.</li>
+    <li>Split it into chunks of roughly 300 tokens, with a small overlap.</li>
+    <li>Embed every chunk and add them to the store with their metadata.</li>
+    <li>Ask <em>&ldquo;What is Task Decomposition?&rdquo;</em> and embed that question.</li>
+    <li>Find the top-k chunks whose vectors are nearest to it.</li>
+    <li>Build the prompt from those chunks plus the question, and generate an answer that cites its source.</li>
+  </ol>
+</div>
+
+<h2 id="params">Parameters that matter</h2>
+
+<p>
+  A handful of numbers shape the behaviour of the whole pipeline. None has a single correct value — they are
+  dials you adjust to your documents — but these are sensible starting points.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Parameter</th><th>Typical value</th><th>What it controls</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="mono">chunk_size_tokens</td><td>300–512</td><td>How much text per chunk</td></tr>
+    <tr><td class="mono">chunk_overlap_tokens</td><td>10–20% of size</td><td>Context carried across boundaries</td></tr>
+    <tr><td class="mono">k</td><td>4–6</td><td>How many chunks are retrieved</td></tr>
+    <tr><td class="mono">temperature</td><td>0</td><td>Randomness of generation</td></tr>
+    <tr><td class="mono">context_window</td><td>model-specific</td><td>Total prompt + context + answer budget</td></tr>
+    <tr><td class="mono">max_answer_tokens</td><td>512–1024</td><td>Cap on answer length</td></tr>
+  </tbody>
+</table>
+
+<h2 id="gotchas">Things to remember</h2>
+
+<p>
+  Most of what goes wrong in a RAG system comes down to a small set of mistakes. These are the ones worth
+  keeping in mind.
+</p>
+
+<div class="card">
+  <p><strong>1. Re-embed when the embedding model changes.</strong> Different models produce vectors of
+  different length, and their vectors are not compatible. Changing the model means rebuilding the entire store
+  from scratch — old vectors cannot be reused.</p>
+  <p><strong>2. Use the model's own tokenizer.</strong> A token count is only correct for the tokenizer that
+  produced it. Count with something else and your chunks will be the wrong size and your context budget wrong.</p>
+  <p><strong>3. Chunk size &times; k must fit the context window.</strong> Context is not free. Larger chunks and more
+  of them push other text out of the window and make the answer slower.</p>
+  <p><strong>4. Retrieval quality beats model size.</strong> Better chunks and a better <code>k</code> usually
+  improve answers more than a larger language model reading poor context would.</p>
+  <p><strong>5. Grounding is not a guarantee.</strong> The model can still drift outside the context. Prompt it
+  explicitly to say &ldquo;I don't know&rdquo; when the answer is not there.</p>
+</div>
+
+<h2 id="glossary">Glossary</h2>
+
+<div class="card">
+  <p><strong>Chunk</strong> — a piece of a document; the unit that is embedded, retrieved and shown to the model.</p>
+  <p><strong>Context window</strong> — the maximum amount of text, measured in tokens, a model can take in at once.</p>
+  <p><strong>Embedding</strong> — a fixed-length numeric vector representing the meaning of a piece of text.</p>
+  <p><strong>Cosine similarity</strong> — a score from -1 to 1 for how similar two vectors are in direction.</p>
+  <p><strong>Vector store</strong> — a collection of chunks and their vectors, built for nearest-neighbour search.</p>
+  <p><strong>Top-k</strong> — the k most similar chunks returned for a query.</p>
+  <p><strong>Grounding</strong> — forcing the model to answer from the supplied context rather than from memory.</p>
+  <p><strong>Hallucination</strong> — a confident but unsupported or false model answer.</p>
+</div>
+
+<div class="credit">
+  <p>
+    <strong>Credits.</strong> Based on the <em>RAG From Scratch</em> video series and repo by LangChain:
+    <a href="https://www.youtube.com/watch?v=sVcwVQRHIc8&amp;t=1245s">video</a> &middot;
+    <a href="https://github.com/langchain-ai/rag-from-scratch">repo</a>.
+  </p>
+</div>
+
+<footer>
+  <p>
+    Theory overview only — the runnable version lives in the notebook. Source:
+    <a href="https://github.com/itsmusa/open-rag">github.com/itsmusa/open-rag</a>.
+  </p>
+</footer>
+
+</div>
+</body>
+</html>
