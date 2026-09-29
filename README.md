@@ -16,7 +16,6 @@ GENERATE (query)    prompt template + context → LLM → answer
 | What | Where |
 |---|---|
 | Theory guide, Parts 1–4 | [`docs/theory.md`](docs/theory.md) |
-| The open-stack reference (models, tools, licenses) | [`docs/open-rag-stack.md`](docs/open-rag-stack.md) |
 | The runnable implementation | [`notebooks/open_rag_from_scratch_1_to_4.ipynb`](notebooks/open_rag_from_scratch_1_to_4.ipynb) |
 
 ## How to follow this
