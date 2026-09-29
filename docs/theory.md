@@ -37,9 +37,11 @@ One of the most useful mental models in RAG is that there are really two separat
 
 Keeping these apart matters because they have very different constraints. Indexing can take minutes or hours — it is a batch job you run in the background. Serving, by contrast, happens while a person waits, so it has to be fast. Both halves meet at one place: the vector store, which indexing writes to and serving reads from.
 
-```
-INDEXING                              SERVING
-(runs once, over all your documents)  (runs every time a question is asked)
+```mermaid
+flowchart LR
+  IDX["INDEXING<br/>runs once, over all your documents"]
+  SRV["SERVING<br/>runs every time a question is asked"]
+  IDX <--> SRV
 ```
 
 The two halves never call each other directly — they communicate through the vector store.
@@ -56,8 +58,9 @@ The two halves never call each other directly — they communicate through the v
 
 Put the two jobs together and you get the three phases that every RAG system shares. **Index** prepares the documents. **Retrieve** finds the parts relevant to a question. **Generate** turns those parts into an answer. The first phase happens once and offline; the other two happen together, live, for every question.
 
-```
-1. INDEX  →  2. RETRIEVE  →  3. GENERATE
+```mermaid
+flowchart LR
+  A["1. INDEX"] --> B["2. RETRIEVE"] --> C["3. GENERATE"]
 ```
 
 One line that tells the whole story. Parts 2, 3 and 4 take each phase in turn.
@@ -74,8 +77,9 @@ Before taking the system apart, it is worth seeing its shape whole. Part 1 runs 
 
 Read left to right, the chain is five small verbs. We load a document, split it into manageable pieces, turn those pieces into searchable form and store them, ask a question, and get an answer. That is the whole of RAG; everything else in this document is just a closer look at one of those verbs.
 
-```
-load a document  →  split into chunks  →  embed + store  →  ask a question  →  answer
+```mermaid
+flowchart LR
+  A["load a document"] --> B["split into chunks"] --> C["embed + store"] --> D["ask a question"] --> E["answer"]
 ```
 
 In code, all five steps collapse into one plain function: `rag(question)`.
@@ -117,8 +121,9 @@ It is worth separating two words that are easy to confuse. A **document** is the
 >
 > With just these two lines we can demonstrate every step from here to an answer, without the noise of real documents getting in the way.
 
-```
-raw text (your source)  →  a document + metadata
+```mermaid
+flowchart TD
+  A["raw text (your source)"] --> B["a document + metadata"]
 ```
 
 ### 2.2 Token counting
@@ -127,8 +132,9 @@ Here is a fact that surprises most people: language models don't read characters
 
 That count matters for three practical reasons. First, every model has a **context window** — a maximum amount of text it can take in at once — and the prompt, the retrieved context and the answer all have to fit inside it together. Second, chunks are measured in tokens, so the count is what lets us size them sensibly. Third, tokens translate directly into speed and, on paid runtimes, cost: more tokens per request means slower answers.
 
-```
-"My favorite pet is a cat."  → count  →  [My] [ favorite] [ pet] [ is] [ a] [ cat] [.]  = 7 tokens
+```mermaid
+flowchart TD
+  A["\"My favorite pet is a cat.\""] -->|"count"| B["My · favorite · pet · is · a · cat · . = 7 tokens"]
 ```
 
 > **Use the model's own tokenizer.** A token count is only correct for the tokenizer that produced it. Count with a different model's tokenizer and you will mis-size chunks and mis-estimate how much room is left in the context window.
@@ -139,8 +145,9 @@ That count matters for three practical reasons. First, every model has a **conte
 
 An **embedding** is the trick that makes search work by meaning rather than by matching exact words. It turns a piece of text into a list of numbers — a vector — that captures what the text is about. Texts with similar meaning end up as nearby vectors, even when they share no words at all. This is why a search for "how do I do X" can find a passage that talks about X without ever using the phrase.
 
-```
-"What is Task Decomposition?"  → embed  →  [0.021, -0.134, 0.887, 0.045, … 1024 numbers]
+```mermaid
+flowchart TD
+  A["\"What is Task Decomposition?\""] -->|"embed"| B["[0.021, -0.134, 0.887, 0.045, … 1024 numbers]"]
 ```
 
 Each piece of text becomes a fixed-length vector — here, **1024 numbers**.
@@ -155,8 +162,9 @@ SentenceTransformer("Qwen/Qwen3-Embedding-0.6B").encode(texts)  # runs locally, 
 
 Once text is numbers, comparing two pieces of text becomes a matter of comparing two vectors. The standard way to do that for text is **cosine similarity**, which measures the *angle* between the vectors. It deliberately ignores how long each vector is and cares only about the direction it points, which turns out to suit language very well: two texts about the same idea point the same way, regardless of whether one is a short phrase and the other a long paragraph.
 
-```
-vector A (question)  →  compare  →  vector B (document)  →  score ≈ 1.0 → closely related
+```mermaid
+flowchart TD
+  A["vector A (question)"] -->|"compare"| B["vector B (document)"] --> C["score ≈ 1.0 → closely related"]
 ```
 
 The score runs from `1`, meaning the vectors point exactly the same way and the texts are essentially identical in meaning, down toward `0` for unrelated texts. In practice the useful signal lives in a fairly narrow band at the top.
@@ -174,8 +182,9 @@ The score runs from `1`, meaning the vectors point exactly the same way and the 
 
 Real sources are messy. A web page is mostly menus, adverts, cookie banners, navigation and footers wrapped around a small core of actual article text. If you embed all of that noise, you pollute the store with irrelevant material and dilute the answers. A **loader** exists to prevent that: it fetches the source and keeps only the meaningful text.
 
-```
-URL  →  raw HTML  →  strip nav / ads  →  clean article text
+```mermaid
+flowchart LR
+  A["URL"] --> B["raw HTML"] --> C["strip nav / ads"] --> D["clean article text"]
 ```
 
 A good loader does three things. It extracts the main content and drops the boilerplate. It attaches metadata — the source URL or file name, a title, perhaps a date — which will be carried forward onto every chunk so answers can cite their origin. And it normalises whitespace and encoding, so the same text always looks the same no matter how it arrived.
@@ -190,10 +199,11 @@ Long documents have to be broken into smaller pieces, called **chunks**. This is
 
 First, **precision**. A small, focused chunk that genuinely matches the question beats a whole page that only sort of matches, because the model is handed less irrelevant text to wade through. Second, **fit**: chunks must be able to sit inside the model's context window alongside the prompt. Third, boundaries themselves can do harm, so chunks usually **overlap** slightly. A sentence that happens to fall on a cut can otherwise be split in half and lose its meaning; a small overlap keeps that context intact.
 
+```mermaid
+flowchart TD
+  A["one long article"] -->|"split"| B["chunk 1 · chunk 2 · chunk 3 · chunk 4 · …"]
 ```
-one long article  →  split  →  [chunk 1] [chunk 2] [chunk 3] [chunk 4] […]
-e.g. chunk_size = 300 tokens, chunk_overlap = 50
-```
+e.g. `chunk_size = 300 tokens`, `chunk_overlap = 50`
 
 Chunk size is a trade-off, and it is worth internalising. Small chunks give precise matches but may leave out the surrounding context needed to understand them. Large chunks carry more context but dilute relevance and eat into the context window. There is no universal best size; it depends on your documents, so it is a parameter you tune.
 
@@ -208,10 +218,11 @@ Chunk size is a trade-off, and it is worth internalising. Small chunks give prec
 
 The last step of indexing is to save the results. A **vector store** holds each chunk together with its vector, so that later we can ask a simple question of it: which chunks are closest to this new question? Think of it as a library you build out of your own documents, organised by meaning rather than alphabet.
 
+```mermaid
+flowchart TD
+  A["chunk + vector"] -->|"store"| B["vector store"]
 ```
-chunk + vector  →  store  →  vector store
-later: store the question's vector too, and find nearest neighbours
-```
+Later: store the question's vector too, and find nearest neighbours.
 
 | id | chunk (text) | vector |
 |---|---|---|
@@ -231,10 +242,11 @@ chromadb.PersistentClient()  →  collection.add(ids, documents, embeddings, met
 
 With the store built, we reach the live half of the system. Retrieval answers a single question: *which chunks are most relevant to what was just asked?* The method is the same idea we used to build the store, run in reverse. We embed the question with the same embedding model, then look for the chunks whose vectors are nearest to the question's vector. The handful of closest chunks — the "top-k" — are what get passed on.
 
+```mermaid
+flowchart LR
+  A["question"] -->|"embed"| B["nearest-neighbour search"] --> C["top-k chunks"]
 ```
-question  →  embed  →  nearest-neighbour search  →  top-k chunks
-collection.query(query_embeddings=[…], n_results=k)
-```
+`collection.query(query_embeddings=[…], n_results=k)`
 
 The one number to choose here is `k` — how many chunks to retrieve. It is a genuine trade-off. Retrieve too few and the correct chunk may never make it into the context, making a good answer impossible. Retrieve too many and you flood the model with loosely related text, which dilutes the signal and crowds the context window.
 
@@ -258,8 +270,9 @@ The retrieved chunks are then gathered together, usually reordered with the most
 
 This is the stage that gives RAG its name. The chunks retrieved in Part 3 are placed into a **prompt** alongside the question, and the language model writes an answer *from that context*. This is the "Generation" in Retrieval-Augmented Generation, and it is what makes the answer grounded: the model is now working from your documents rather than reaching into its memory.
 
-```
-retrieved context  +  question  →  prompt template  →  "Answer only from the context…"  →  LLM  →  answer
+```mermaid
+flowchart TD
+  A["retrieved context"] + B["question"] --> C["prompt template"] --> D["\"Answer only from the context…\""] --> E["LLM"] --> F["answer"]
 ```
 
 Most of the craft in this stage lives in the prompt. A good one asks for three things. It asks the model to **ground** itself — "answer only from the context" — which reduces invented facts. It asks for **citations** — "point to the source of each claim" — which makes answers checkable. And it gives the model permission to be honest: "if the context does not contain the answer, say so". That last instruction is easy to forget and quietly prevents a lot of confident nonsense.
@@ -286,10 +299,11 @@ A few parameters shape the output. Temperature controls randomness — at zero t
 
 It is worth seeing the whole thing in one view now that each piece has been explained. Indexing runs once along the top, turning documents into a store. Then, for each question, the flow drops into the serving half along the bottom: embed the question, retrieve the nearest chunks, build the prompt, and generate the answer.
 
-```
-documents  →  chunks  →  vectors  →  store
-                  ↓ question enters here ↓
-embed question  →  top-k chunks  →  prompt  →  LLM answer
+```mermaid
+flowchart TD
+  A["documents"] --> B["chunks"] --> C["vectors"] --> D["store"]
+  D -.->|"question enters here"| E["embed question"]
+  E --> F["top-k chunks"] --> G["prompt"] --> H["LLM answer"]
 ```
 
 Index once at the top; retrieve and generate for every question.
