@@ -1,0 +1,9 @@
+requests
+trafilatura
+tokenizers
+chonkie
+sentence-transformers
+chromadb
+ollama
+jinja2
+numpy

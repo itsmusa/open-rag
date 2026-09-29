@@ -1,0 +1,21 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Notebook
+.ipynb_checkpoints/
+
+# Generated index (vector store)
+index/
+
+# Local planning / scratch
+phase1-plan.md
+
+# Local reference clone
+rag-from-scratch-main/
+
+# OS
+.DS_Store
+Thumbs.db
