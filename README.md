@@ -1,4 +1,5 @@
-# Open RAG From Scratch
+**This was done using Opencode**
+# (Open) RAG From Scratch
 
 A from-scratch walkthrough of retrieval-augmented generation (RAG), built with open, self-hostable tools and run entirely on your own machine.
 
