@@ -34,7 +34,7 @@ GENERATE (query)    prompt template + context → LLM → answer
 Requires Python 3.10+ and [Ollama](https://ollama.com) (the local model runtime, installed separately).
 
 ```bash
-git clone https://github.com/<your-account>/open-rag.git
+git clone https://github.com/itsmusa/open-rag.git
 cd open-rag
 
 python -m venv .venv
