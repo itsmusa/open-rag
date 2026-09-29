@@ -1,0 +1,5 @@
+%%{init: {"themeVariables": {"fontSize": "24px"}}}%%
+flowchart TD
+  A["documents"] --> B["chunks"] --> C["vectors"] --> D["store"]
+  D -.->|"question enters here"| E["embed question"]
+  E --> F["top-k chunks"] --> G["prompt"] --> H["LLM answer"]
