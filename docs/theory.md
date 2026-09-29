@@ -28,13 +28,19 @@ Before learning *how* RAG works, it helps to understand the problem it was inven
 %%{init: {"themeVariables": {"fontSize": "20px"}}}%%
 block-beta
   columns 3
-  P1["<b>Stale knowledge</b><br/>The model has no idea anything was published after its training cut-off.<br/>Ask about a change made last week and it simply cannot know."]
+  P1["<b>Stale knowledge</b><br/>Knows nothing published<br/>after its training cut-off"]
   space:1
-  P2["<b>No private data</b><br/>It has never seen your notes, tickets, contracts or internal documentation.<br/>That information exists only in your systems, not in its weights."]
-  P3["<b>Confident guessing</b><br/>When it does not know, it rarely says so. It produces something plausible-sounding instead —<br/>a hallucination that reads as fluently as a fact."]
+  P2["<b>No private data</b><br/>Never seen your notes,<br/>tickets or contracts"]
   space:1
-  P4["<b>No sources</b><br/>Even when the answer is right, there is no way to check where it came from.<br/>You cannot trace the claim back to a document."]
+  P3["<b>Confident guessing</b><br/>Rarely admits it<br/>does not know"]
+  space:1
+  P4["<b>No sources</b><br/>Cannot trace a claim<br/>back to a document"]
 ```
+
+- **Stale knowledge** — The model has no idea anything was published after its training cut-off. Ask about a change made last week and it simply cannot know.
+- **No private data** — It has never seen your notes, tickets, contracts or internal documentation. That information exists only in your systems, not in its weights.
+- **Confident guessing** — When it doesn't know, it rarely says so. It produces something plausible-sounding instead — a "hallucination" that reads as fluently as a fact.
+- **No sources** — Even when the answer is right, there is no way to check where it came from. You cannot trace the claim back to a document.
 
 You might wonder why we don't simply teach the model new facts by fine-tuning it. Fine-tuning is good at shaping *style and form* — how the model writes, the tone it takes, the format it follows. But it is a poor tool for *facts*. It is slow and expensive to repeat, it cannot cite where an answer came from, and every time a single document changes you would have to retrain. RAG takes the opposite approach: leave the model as it is, and give it the right text at the moment it answers. Updating knowledge becomes as cheap as re-indexing one file, and the answer can point straight back at the text it used.
 
