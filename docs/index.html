@@ -356,9 +356,10 @@ room is left in the context window.</div>
 </figure>
 
 <p>
-  The score runs from <code>1</code>, meaning the vectors point exactly the same way and the texts are
-  essentially identical in meaning, down toward <code>0</code> for unrelated texts. In practice the useful
-  signal lives in a fairly narrow band at the top.
+  The score runs from <code>1</code>, where the vectors point exactly the same way and the texts are
+  essentially identical in meaning, down through <code>0</code> for unrelated texts, and in principle to
+  <code>-1</code> for vectors pointing in opposite directions. For normalised text embeddings the useful
+  signal lives in a fairly narrow band near the top, and negative values are rare in practice.
 </p>
 
 <table>
@@ -370,6 +371,7 @@ room is left in the context window.</div>
     <tr><td class="mono">~0.7–0.9</td><td>Clearly related</td></tr>
     <tr><td class="mono">~0.3–0.6</td><td>Loosely related</td></tr>
     <tr><td class="mono">~0.0</td><td>Unrelated</td></tr>
+    <tr><td class="mono">-1.0</td><td>Opposite direction &mdash; maximally dissimilar</td></tr>
   </tbody>
 </table>
 
@@ -459,7 +461,11 @@ room is left in the context window.</div>
 </table>
 
 <div class="note">chonkie&rsquo;s <code>RecursiveChunker</code> splits by <strong>tokens</strong> using the model's
-tokenizer, trying paragraph, then sentence, then word boundaries before resorting to a hard cut.</div>
+tokenizer, trying paragraph, then sentence, then word boundaries before resorting to a hard cut. Pass that
+tokenizer explicitly: if you do not, <code>RecursiveChunker</code> falls back to a <em>character</em> tokenizer and
+<code>chunk_size</code> silently becomes a character budget &mdash; the same article at
+<code>chunk_size=300</code> becomes 34 chunks by token and 185 by character. It also exposes no overlap
+parameter, so its chunks are packed back to back.</div>
 
 <h3 id="p2-7"><span class="n">2.7</span>Vector store</h3>
 
@@ -629,6 +635,9 @@ function.</div>
 
 <h2 id="p5">Part 5 &mdash; Multi-Query</h2>
 
+<img class="art" src="assets/multi_query.png" alt="Multi-Query flow diagram">
+<p class="imgcap">Multi-Query: the question fans out into several paraphrases, each one searches the vector store, and the results are merged before the model answers.</p>
+
 <p>
   The chain so far asks the vector store exactly one question: the user's. That is a sensible default and it
   works more often than you might expect. But it rests on a single embedding of a single sentence, and a
@@ -653,22 +662,6 @@ function.</div>
   in a passage the original question missed, and it cannot remove one the original question found.
 </p>
 
-<figure class="diagram">
-  <div class="vflow">
-    <span class="node dark">question</span>
-    <span class="arw" aria-hidden="true">&darr;</span>
-    <div class="chips">
-      <span class="chip">paraphrase 1</span><span class="chip">paraphrase 2</span>
-      <span class="chip">paraphrase 3</span><span class="chip">&hellip;</span>
-    </div>
-    <span class="arw" aria-hidden="true">&darr; retrieve each</span>
-    <span class="node">unique union of chunks</span>
-    <span class="arw" aria-hidden="true">&darr;</span>
-    <span class="node light">answer</span>
-  </div>
-  <figcaption>Several searches, merged into one context.</figcaption>
-</figure>
-
 <div class="ex">
   <span class="tag">Running example</span>
   <p>
@@ -683,23 +676,18 @@ function.</div>
 Multi-Query discards that information &mdash; a chunk found last for one query counts the same as the top hit for
 another. That is a fair thing to lose if you have no better idea, and the next part is the better idea.</div>
 
+<p><strong>Read more:</strong> <a href="https://arxiv.org/abs/2303.07678">Query2doc: Query Expansion with Large Language Models</a> &middot; <a href="https://arxiv.org/abs/2509.07794">Query Expansion in the Age of LLMs: A Survey</a>.</p>
+
 <h2 id="p6">Part 6 &mdash; RAG-Fusion</h2>
+
+<img class="art" src="assets/rag_fusion.png" alt="RAG-Fusion flow diagram">
+<p class="imgcap">RAG-Fusion: the same fan-out as Multi-Query, but the separate result lists pass through a re-ranker (Reciprocal Rank Fusion) before the model sees them.</p>
 
 <p>
   <strong>RAG-Fusion</strong> is Multi-Query with one change: instead of throwing the rankings away, it uses them.
   Each query still produces its own ordered list, and every chunk found at position <code>r</code> of a list earns
-  a score for that list.
+  a score for that list: <code>1 / (r + k)</code>, summed across every list the chunk appears in.
 </p>
-
-<figure class="diagram">
-  <div class="vflow">
-    <span class="node">&rarr; list 1 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
-    <span class="node">&rarr; list 2 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
-    <span class="node">&rarr; list 3 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
-    <span class="arw" aria-hidden="true">&darr; score += 1 / (rank + k)</span>
-    <span class="node dark">one fused ranking</span>
-  </div>
-</figure>
 
 <table>
   <thead>
@@ -733,6 +721,8 @@ rank 0 weigh more than everything else.</div>
   </p>
 </div>
 
+<p><strong>Read more:</strong> <a href="https://towardsdatascience.com/forget-rag-the-future-is-rag-fusion-1147298d8ad1">Forget RAG, the future is RAG-Fusion</a> &middot; <a href="https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf">Reciprocal Rank Fusion (Cormack, Clarke &amp; B&uuml;ttcher, 2009)</a>.</p>
+
 <h2 id="p7">Part 7 &mdash; Decomposition</h2>
 
 <p>
@@ -741,18 +731,6 @@ rank 0 weigh more than everything else.</div>
   retrieves for each, and combines the results. It is the right tool when one question is really several
   questions wearing a trench coat.
 </p>
-
-<figure class="diagram">
-  <div class="vflow">
-    <span class="node dark">one big question</span>
-    <span class="arw" aria-hidden="true">&darr; break down</span>
-    <div class="chips">
-      <span class="chip">sub-question 1</span><span class="chip">sub-question 2</span><span class="chip">sub-question 3</span>
-    </div>
-    <span class="arw" aria-hidden="true">&darr; retrieve &amp; answer each</span>
-    <span class="node light">one synthesized answer</span>
-  </div>
-</figure>
 
 <p>
   <em>&ldquo;What are the main components of an LLM-powered autonomous agent system?&rdquo;</em> is not really one
@@ -785,6 +763,12 @@ rank 0 weigh more than everything else.</div>
   </div>
 </div>
 
+<img class="art" src="assets/decomposition_recursive.png" alt="Decomposition answered recursively">
+<p class="imgcap">Recursive: each sub-question is retrieved and answered, and every answer is carried forward before a final answer is synthesized.</p>
+
+<img class="art" src="assets/decomposition_individual.png" alt="Decomposition answered individually">
+<p class="imgcap">Individual: each sub-question is retrieved and answered in isolation, with nothing passed between them.</p>
+
 <p>
   Either way the last step is identical: hand the question-and-answer pairs to the model and ask for one
   synthesized answer to the original question. Note that decomposition needs a <em>second</em> generation pass
@@ -792,7 +776,12 @@ rank 0 weigh more than everything else.</div>
   the one that most rewards careful budgeting.
 </p>
 
+<p><strong>Papers:</strong> <a href="https://arxiv.org/abs/2205.10625">Least-to-Most Prompting</a> &middot; <a href="https://arxiv.org/abs/2212.10509">Tree of Thoughts</a>.</p>
+
 <h2 id="p8">Part 8 &mdash; Step-Back</h2>
+
+<img class="art" src="assets/step_back.png" alt="Step-Back prompting abstracting the question">
+<p class="imgcap">Where step-back sits on the abstraction axis: <em>up</em> to a broader question, <em>down</em> to sub-questions.</p>
 
 <p>
   Some questions are too specific to retrieve with. Ask <em>&ldquo;when was Jan Sindel born?&rdquo;</em> and you
@@ -818,7 +807,7 @@ rank 0 weigh more than everything else.</div>
     <span class="arw" aria-hidden="true">&rarr;</span>
     <span class="node light">answer</span>
   </div>
-  <figcaption>Two searches, one wider than the other, both kept.</figcaption>
+  <figcaption>Step-back retrieved alongside the original; the two contexts are kept apart and labelled.</figcaption>
 </figure>
 
 <div class="note"><strong>Show, don't describe.</strong> The paraphrase is produced with a couple of
@@ -836,7 +825,12 @@ few-shot prompt is not optional polish.</div>
   </p>
 </div>
 
+<p><strong>Paper:</strong> <a href="https://arxiv.org/abs/2310.06117">Take a Step Back: Evoking Reasoning via Abstraction in Large Language Models</a>.</p>
+
 <h2 id="p9">Part 9 &mdash; HyDE</h2>
+
+<img class="art" src="assets/hyde.png" alt="HyDE embedding a hypothetical document">
+<p class="imgcap">HyDE: the question generates a hypothetical answer passage, and <em>its</em> embedding is what lands among the real documents on the right.</p>
 
 <p>
   Here is the mismatch in its sharpest form. The question and the passage that answers it often share almost no
@@ -852,18 +846,6 @@ few-shot prompt is not optional polish.</div>
   it is entirely made up.
 </p>
 
-<figure class="diagram">
-  <div class="vflow">
-    <span class="node dark">question</span>
-    <span class="arw" aria-hidden="true">&darr; model writes a fake answer</span>
-    <span class="node">hypothetical passage<br><small>never shown to anyone &mdash; only embedded</small></span>
-    <span class="arw" aria-hidden="true">&darr; embed &amp; retrieve</span>
-    <span class="node">real chunks</span>
-    <span class="arw" aria-hidden="true">&darr;</span>
-    <span class="node light">answer, from the real chunks</span>
-  </div>
-</figure>
-
 <div class="note"><strong>The passage is a query, not an answer.</strong> It is written from the model's own
 memory, so it is ungrounded by construction and quite possibly wrong. It is never shown as a result and never
 reaches the user &mdash; only its embedding is used, as an arrow pointing at the right part of the store. The
@@ -878,18 +860,21 @@ model answer from something it invented, this is the one to check first.</div>
     <tr><td>Baseline</td><td>Always a strong default; use it first</td><td class="mono">1</td></tr>
     <tr><td>Multi-Query</td><td>The question is phrased far from the document</td><td class="mono">+1</td></tr>
     <tr><td>RAG-Fusion</td><td>As above, and the ranking matters</td><td class="mono">+1</td></tr>
-    <tr><td>Decomposition</td><td>One question that is really several</td><td class="mono">+1 per sub-question</td></tr>
+    <tr><td>Decomposition</td><td>One question that is really several</td><td class="mono">+1 per sub-question, +1 to synthesize</td></tr>
     <tr><td>Step-Back</td><td>The question is too specific to match a passage</td><td class="mono">+1</td></tr>
     <tr><td>HyDE</td><td>The vocabulary simply does not overlap</td><td class="mono">+1</td></tr>
   </tbody>
 </table>
 
 <p>
-  Read that last column before reaching for any of them. Every technique in Parts 5&ndash;9 costs at least one
+  &ldquo;Extra model calls&rdquo; counts calls beyond the baseline's single generation call. Read that last column
+  before reaching for any of them. Every technique in Parts 5&ndash;9 costs at least one
   extra round-trip to the model on every single question, and if the baseline retrieval was already retrieving
   the right chunks, all of that buys nothing. The reliable way to find out is to measure: run the baseline, look
   at whether the answer's chunk was in the context, and only reach for a query transformation when it was not.
 </p>
+
+<p><strong>Read more:</strong> <a href="https://arxiv.org/abs/2212.10496">Precise Zero-Shot Dense Retrieval without Relevance Labels</a> (the HyDE paper) &middot; <a href="https://aclanthology.org/2023.acl-long.99/">ACL 2023 version</a>.</p>
 
 <div class="divider">&#8226;&#8226;&#8226;</div>
 
@@ -997,9 +982,13 @@ five paraphrases, a union can gather around 25 chunks before anything is trimmed
   identical passages from different sources have different ids, and near-identical text can differ in
   whitespace.</p>
   <p><strong>7. A reasoning model will reason at you.</strong> If the model you use thinks out loud, its reply to
-  a &ldquo;give me three queries&rdquo; prompt may be a transcript rather than three queries. Turn thinking off
-  for these short generation steps, and parse the output into a clean list rather than trusting
-  <code>split("\n")</code>.</p>
+  a &ldquo;give me three queries&rdquo; prompt may be a transcript rather than three queries. Ask for thinking to be
+  turned off for these short generation steps, and parse the output into a clean list rather than trusting
+  <code>split("\n")</code>. Do not assume the flag was honoured, though: with <code>gpt-oss:20b</code> the reasoning
+  channel still runs, it simply comes back in a separate field &mdash; and on a short job it can consume the whole
+  <code>num_predict</code> budget and return <em>empty</em> content. An empty reply does not crash, it silently
+  degrades into a fallback question, so treat an empty answer as a real failure signal and retry with a larger
+  budget.</p>
   <p><strong>8. Query transformation cannot invent a document.</strong> Every technique in Parts 5&ndash;9 is a
   <em>retrieval</em> improvement. If the answer was never indexed, no amount of clever rewriting will surface it
   &mdash; and a fabricated query passage (HyDE) must never be allowed to stand in for a real one.</p>
@@ -1032,9 +1021,11 @@ five paraphrases, a union can gather around 25 chunks before anything is trimmed
 
 <div class="credit">
   <p>
-    <strong>Credits.</strong> Based on the <em>RAG From Scratch</em> video series and repo by LangChain:
-    <a href="https://www.youtube.com/watch?v=sVcwVQRHIc8&amp;t=1245s">video</a> &middot;
-    <a href="https://github.com/langchain-ai/rag-from-scratch">repo</a>.
+    <strong>Further reading.</strong> Each technique has a primary source: query expansion and multi-query
+    (Wang et al., 2023; Cormack et al., 2009), least-to-most prompting (Zhou et al., 2022), tree of thoughts
+    (Yao et al., 2023), step-back prompting (Zheng et al., 2023), and HyDE (Gao et al., 2022). For the wider
+    field, see <a href="https://arxiv.org/abs/2312.10997">Retrieval-Augmented Generation for Large Language
+    Models: A Survey</a>.
   </p>
 </div>
 
