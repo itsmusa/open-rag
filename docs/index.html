@@ -19,7 +19,7 @@
 
 <header class="top">
   <h1>RAG From Scratch — Theory</h1>
-  <p class="sub">Parts 1–4 explained in plain language, with diagrams and worked examples.</p>
+  <p class="sub">Parts 1&ndash;9 explained in plain language, with diagrams and worked examples.</p>
 </header>
 
 <nav class="toc" aria-label="Contents">
@@ -30,6 +30,11 @@
   <a href="#p2">Part 2 · Indexing</a>
   <a href="#p3">Part 3 · Retrieval</a>
   <a href="#p4">Part 4 · Generation</a>
+  <a href="#p5">Part 5 · Multi-Query</a>
+  <a href="#p6">Part 6 · RAG-Fusion</a>
+  <a href="#p7">Part 7 · Decomposition</a>
+  <a href="#p8">Part 8 · Step-Back</a>
+  <a href="#p9">Part 9 · HyDE</a>
   <a href="#params">Parameters</a>
   <a href="#gotchas">Gotchas</a>
   <a href="#glossary">Glossary</a>
@@ -44,9 +49,11 @@
 </p>
 
 <p>
-  The rest of this document builds that idea up in four parts, one piece at a time: first a bird's-eye view of
-  the whole chain, then indexing, then retrieval, then generation. Each section stays close to the ground, with
-  a diagram and an example, so the reasoning is easy to follow even if you have never built one before.
+  The rest of this document builds that idea up one piece at a time. Parts 1&ndash;4 build the chain itself: first
+  a bird's-eye view of the whole thing, then indexing, then retrieval, then generation. Parts 5&ndash;9 then
+  improve the one step that most often falls short &mdash; the search. Each section stays close to the ground,
+  with a diagram and a worked example, so the reasoning is easy to follow even if you have never built a RAG
+  system before.
 </p>
 
 <h2 id="problem">Why RAG exists</h2>
@@ -620,6 +627,272 @@ function.</div>
 
 <div class="divider">&#8226;&#8226;&#8226;</div>
 
+<h2 id="p5">Part 5 &mdash; Multi-Query</h2>
+
+<p>
+  The chain so far asks the vector store exactly one question: the user's. That is a sensible default and it
+  works more often than you might expect. But it rests on a single embedding of a single sentence, and a
+  question is rarely worded the way its best passage is. A user asks <em>&ldquo;how do I stop the bot
+  looping?&rdquo;</em> while the page that answers it says <em>&ldquo;retry with exponential backoff&rdquo;</em>.
+  Almost nothing in common, so almost nothing is found.
+</p>
+
+<p>
+  The five parts that follow all attack that mismatch, and all attack it the same way: <strong>improve the
+  query before it reaches the vector store</strong>, then run Parts 3 and 4 completely unchanged. Notice what
+  that leaves alone. The documents are not re-indexed. The prompt template is not improved. The language model
+  does not change. The only thing that moves is the string being embedded.
+</p>
+
+<h3 id="p5-1"><span class="n">5.1</span>Asking several questions at once</h3>
+
+<p>
+  <strong>Multi-Query</strong> takes the simplest possible route. Ask the model for several different versions of
+  the same question, run a retrieval for each one, and keep the <strong>unique union</strong> of everything that
+  comes back. A chunk found by any single phrasing survives, so the technique is only ever additive: it can pull
+  in a passage the original question missed, and it cannot remove one the original question found.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node dark">question</span>
+    <span class="arw" aria-hidden="true">&darr;</span>
+    <div class="chips">
+      <span class="chip">paraphrase 1</span><span class="chip">paraphrase 2</span>
+      <span class="chip">paraphrase 3</span><span class="chip">&hellip;</span>
+    </div>
+    <span class="arw" aria-hidden="true">&darr; retrieve each</span>
+    <span class="node">unique union of chunks</span>
+    <span class="arw" aria-hidden="true">&darr;</span>
+    <span class="node light">answer</span>
+  </div>
+  <figcaption>Several searches, merged into one context.</figcaption>
+</figure>
+
+<div class="ex">
+  <span class="tag">Running example</span>
+  <p>
+    Asked <em>&ldquo;What is Task Decomposition?&rdquo;</em>, the model might also produce <em>&ldquo;How is a
+    complex task broken into smaller steps?&rdquo;</em>, <em>&ldquo;What are subgoals for an LLM agent?&rdquo;</em>
+    and <em>&ldquo;How does chain-of-thought relate to task planning?&rdquo;</em>. Each retrieves its own top-k,
+    and the union is noticeably wider than any single retrieval.
+  </p>
+</div>
+
+<div class="note"><strong>Union, not ranking.</strong> The store returns chunks <em>in rank order</em>, and
+Multi-Query discards that information &mdash; a chunk found last for one query counts the same as the top hit for
+another. That is a fair thing to lose if you have no better idea, and the next part is the better idea.</div>
+
+<h2 id="p6">Part 6 &mdash; RAG-Fusion</h2>
+
+<p>
+  <strong>RAG-Fusion</strong> is Multi-Query with one change: instead of throwing the rankings away, it uses them.
+  Each query still produces its own ordered list, and every chunk found at position <code>r</code> of a list earns
+  a score for that list.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node">&rarr; list 1 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
+    <span class="node">&rarr; list 2 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
+    <span class="node">&rarr; list 3 &nbsp;<small>rank 0, 1, 2 &hellip;</small></span>
+    <span class="arw" aria-hidden="true">&darr; score += 1 / (rank + k)</span>
+    <span class="node dark">one fused ranking</span>
+  </div>
+</figure>
+
+<table>
+  <thead>
+    <tr><th>Found at</th><th>Contributes</th><th>Intuition</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="mono">rank 0 of one list</td><td class="mono">1 / k</td><td>Best hit of a single query &mdash; decent, not decisive</td></tr>
+    <tr><td class="mono">rank 5 of five lists</td><td class="mono">5 / (5 + k)</td><td>Weakly placed, but <em>agreed on</em> by every query</td></tr>
+    <tr><td class="mono">rank 0 of five lists</td><td class="mono">5 / k</td><td>The chunk all the paraphrases liked best</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The point is the second row. A chunk that never ranked highly but shows up in every list beats a chunk that was
+  the single best hit of one query and was never seen again. Reciprocal Rank Fusion has no notion of an
+  irrelevant chunk to discard &mdash; its whole job is to reward agreement, and it does not care how the
+  underlying store decided each individual ranking was correct.
+</p>
+
+<div class="note">The constant <code>k</code> (60 by convention) flattens the curve. It is large enough that the
+first few ranks are close together, which stops a single list from dominating the result just by having its
+rank 0 weigh more than everything else.</div>
+
+<div class="ex">
+  <span class="tag">Running example</span>
+  <p>
+    With the same five paraphrases of <em>&ldquo;What is Task Decomposition?&rdquo;</em>, the plain union hands the
+    model roughly <code>5 &times; 5</code> chunks in no particular order. RAG-Fusion hands it fewer, ordered, with
+    the chunks that several paraphrases independently surfaced at the top &mdash; which is usually where the
+    actual definition lives.
+  </p>
+</div>
+
+<h2 id="p7">Part 7 &mdash; Decomposition</h2>
+
+<p>
+  Multi-Query asks <em>variations</em> of one question. <strong>Decomposition</strong> changes its shape
+  entirely: it breaks the question into <strong>sub-questions that can each be answered on their own</strong>,
+  retrieves for each, and combines the results. It is the right tool when one question is really several
+  questions wearing a trench coat.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node dark">one big question</span>
+    <span class="arw" aria-hidden="true">&darr; break down</span>
+    <div class="chips">
+      <span class="chip">sub-question 1</span><span class="chip">sub-question 2</span><span class="chip">sub-question 3</span>
+    </div>
+    <span class="arw" aria-hidden="true">&darr; retrieve &amp; answer each</span>
+    <span class="node light">one synthesized answer</span>
+  </div>
+</figure>
+
+<p>
+  <em>&ldquo;What are the main components of an LLM-powered autonomous agent system?&rdquo;</em> is not really one
+  retrieval. It is a request for a list of parts, and no single 300-token chunk of any page is going to answer it
+  well. The same document, retrieved competently, may contain the answer spread across six chunks that never
+  resemble the question as a whole.
+</p>
+
+<h3 id="p7-1"><span class="n">7.1</span>Two ways to combine</h3>
+
+<p>
+  Once the sub-questions exist there are two honest ways to answer them, and the trade-off is real rather than
+  stylistic.
+</p>
+
+<div class="grid2">
+  <div class="card">
+    <h4>Recursively</h4>
+    <p>Answer them in order, passing every answer so far as background for the next one. Early findings become
+    evidence for later ones, which is what makes it <em>recursive</em> rather than merely parallel.</p>
+    <p><strong>Costs:</strong> order-dependent — a poor first answer steers the rest — and the accumulated
+    background grows the prompt at every step.</p>
+  </div>
+  <div class="card">
+    <h4>Independently</h4>
+    <p>Answer each in isolation: its own retrieval, its own context, no knowledge of its siblings. No answer can
+    contaminate another and nothing grows.</p>
+    <p><strong>Costs:</strong> later steps cannot use what the earlier ones found, and the model is asked to
+    reconcile answers that were written without seeing each other.</p>
+  </div>
+</div>
+
+<p>
+  Either way the last step is identical: hand the question-and-answer pairs to the model and ask for one
+  synthesized answer to the original question. Note that decomposition needs a <em>second</em> generation pass
+  after the per-sub-question passes, which is what makes it the most expensive technique here &mdash; and also
+  the one that most rewards careful budgeting.
+</p>
+
+<h2 id="p8">Part 8 &mdash; Step-Back</h2>
+
+<p>
+  Some questions are too specific to retrieve with. Ask <em>&ldquo;when was Jan Sindel born?&rdquo;</em> and you
+  search for a date; ask <em>&ldquo;what is Jan Sindel's personal history?&rdquo;</em> and you search for the
+  passage that actually contains it.
+</p>
+
+<p>
+  <strong>Step-Back</strong> paraphrases the question into a broader one and then retrieves with
+  <strong>both</strong> &mdash; the original for precision, the step-back question for coverage. Unlike Multi-Query
+  the two results are kept apart and labelled, so the model can tell which is which.
+</p>
+
+<figure class="diagram">
+  <div class="flow">
+    <span class="node dark">original question</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">context A</span>
+    <span class="arw" aria-hidden="true">+</span>
+    <span class="node dark">step-back question</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node">context B</span>
+    <span class="arw" aria-hidden="true">&rarr;</span>
+    <span class="node light">answer</span>
+  </div>
+  <figcaption>Two searches, one wider than the other, both kept.</figcaption>
+</figure>
+
+<div class="note"><strong>Show, don't describe.</strong> The paraphrase is produced with a couple of
+hand-written input/output examples in the prompt rather than an instruction. Two worked examples teach the
+transformation far more reliably than a paragraph asking for it, and this is the one place in RAG where a
+few-shot prompt is not optional polish.</div>
+
+<div class="ex">
+  <span class="tag">Running example</span>
+  <p>
+    <em>&ldquo;What is Task Decomposition?&rdquo;</em> steps back to <em>&ldquo;How do LLM agents break down a
+    complex task?&rdquo;</em>. The original retrieves the definition; the broader version tends to retrieve the
+    passages around it &mdash; the planning context, the chain-of-thought comparison &mdash; which is usually
+    what makes the definition legible.
+  </p>
+</div>
+
+<h2 id="p9">Part 9 &mdash; HyDE</h2>
+
+<p>
+  Here is the mismatch in its sharpest form. The question and the passage that answers it often share almost no
+  words. <em>&ldquo;What is task decomposition?&rdquo;</em> has nothing in common with <em>&ldquo;Task
+  decomposition can be done by LLM with simple prompting, or by task-specific instructions, or with human
+  input.&rdquo;</em> Both are about the same thing; neither <em>reads</em> like the other.
+</p>
+
+<p>
+  <strong>HyDE</strong> &mdash; Hypothetical Document Embeddings &mdash; inverts the usual direction. Instead of
+  searching with the question, ask the model to <strong>write a short passage that would answer it</strong>, then
+  search with that. The fabricated passage reads like a real one, so it lands among the right chunks even though
+  it is entirely made up.
+</p>
+
+<figure class="diagram">
+  <div class="vflow">
+    <span class="node dark">question</span>
+    <span class="arw" aria-hidden="true">&darr; model writes a fake answer</span>
+    <span class="node">hypothetical passage<br><small>never shown to anyone &mdash; only embedded</small></span>
+    <span class="arw" aria-hidden="true">&darr; embed &amp; retrieve</span>
+    <span class="node">real chunks</span>
+    <span class="arw" aria-hidden="true">&darr;</span>
+    <span class="node light">answer, from the real chunks</span>
+  </div>
+</figure>
+
+<div class="note"><strong>The passage is a query, not an answer.</strong> It is written from the model's own
+memory, so it is ungrounded by construction and quite possibly wrong. It is never shown as a result and never
+reaches the user &mdash; only its embedding is used, as an arrow pointing at the right part of the store. The
+final answer still comes from real, retrieved chunks. If a technique in this document ever seems to let the
+model answer from something it invented, this is the one to check first.</div>
+
+<table>
+  <thead>
+    <tr><th>Technique</th><th>Best when</th><th>Extra model calls</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Baseline</td><td>Always a strong default; use it first</td><td class="mono">1</td></tr>
+    <tr><td>Multi-Query</td><td>The question is phrased far from the document</td><td class="mono">+1</td></tr>
+    <tr><td>RAG-Fusion</td><td>As above, and the ranking matters</td><td class="mono">+1</td></tr>
+    <tr><td>Decomposition</td><td>One question that is really several</td><td class="mono">+1 per sub-question</td></tr>
+    <tr><td>Step-Back</td><td>The question is too specific to match a passage</td><td class="mono">+1</td></tr>
+    <tr><td>HyDE</td><td>The vocabulary simply does not overlap</td><td class="mono">+1</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Read that last column before reaching for any of them. Every technique in Parts 5&ndash;9 costs at least one
+  extra round-trip to the model on every single question, and if the baseline retrieval was already retrieving
+  the right chunks, all of that buys nothing. The reliable way to find out is to measure: run the baseline, look
+  at whether the answer's chunk was in the context, and only reach for a query transformation when it was not.
+</p>
+
+<div class="divider">&#8226;&#8226;&#8226;</div>
+
 <h2 id="end">End to end</h2>
 
 <p>
@@ -651,6 +924,11 @@ function.</div>
   <figcaption>Index once at the top; retrieve and generate for every question.</figcaption>
 </figure>
 
+<p>
+  Parts 5&ndash;9 slot into exactly one place in that bottom row: between <em>&ldquo;ask a question&rdquo;</em> and
+  <em>&ldquo;embed question&rdquo;</em>. Everything else stays where it is.
+</p>
+
 <div class="ex">
   <span class="tag">The running example, start to finish</span>
   <ol>
@@ -661,13 +939,16 @@ function.</div>
     <li>Find the top-k chunks whose vectors are nearest to it.</li>
     <li>Build the prompt from those chunks plus the question, and generate an answer that cites its source.</li>
   </ol>
+  <p>And optionally, between steps 4 and 5, rewrite that question into something easier to search for &mdash;
+  then take steps 5 and 6 unchanged.</p>
 </div>
 
 <h2 id="params">Parameters that matter</h2>
 
 <p>
-  A handful of numbers shape the behaviour of the whole pipeline. None has a single correct value — they are
-  dials you adjust to your documents — but these are sensible starting points.
+  A handful of numbers shape the behaviour of the whole pipeline. None has a single correct value &mdash; they are
+  dials you adjust to your documents &mdash; but these are sensible starting points. The last four only matter
+  once you add query transformations from Parts 5&ndash;9.
 </p>
 
 <table>
@@ -675,14 +956,22 @@ function.</div>
     <tr><th>Parameter</th><th>Typical value</th><th>What it controls</th></tr>
   </thead>
   <tbody>
-    <tr><td class="mono">chunk_size_tokens</td><td>300–512</td><td>How much text per chunk</td></tr>
-    <tr><td class="mono">chunk_overlap_tokens</td><td>10–20% of size</td><td>Context carried across boundaries</td></tr>
-    <tr><td class="mono">k</td><td>4–6</td><td>How many chunks are retrieved</td></tr>
+    <tr><td class="mono">chunk_size_tokens</td><td>300&ndash;512</td><td>How much text per chunk</td></tr>
+    <tr><td class="mono">chunk_overlap_tokens</td><td>10&ndash;20% of size</td><td>Context carried across boundaries</td></tr>
+    <tr><td class="mono">k</td><td>4&ndash;6</td><td>How many chunks are retrieved</td></tr>
     <tr><td class="mono">temperature</td><td>0</td><td>Randomness of generation</td></tr>
     <tr><td class="mono">context_window</td><td>model-specific</td><td>Total prompt + context + answer budget</td></tr>
-    <tr><td class="mono">max_answer_tokens</td><td>512–1024</td><td>Cap on answer length</td></tr>
+    <tr><td class="mono">max_answer_tokens</td><td>512&ndash;1024</td><td>Cap on answer length</td></tr>
+    <tr><td class="mono">num_queries</td><td>3&ndash;5</td><td>Paraphrases or sub-questions generated per question</td></tr>
+    <tr><td class="mono">rrf_k</td><td>60</td><td>Flattens RRF so one list cannot dominate</td></tr>
+    <tr><td class="mono">max_context_chunks</td><td>8&ndash;12</td><td>Ceiling on chunks sent to the model after merging</td></tr>
+    <tr><td class="mono">max_query_tokens</td><td>128&ndash;256</td><td>Cap on one generated search query</td></tr>
   </tbody>
 </table>
+
+<div class="note"><strong>Watch the merged context, not just <code>k</code>.</strong> With <code>k</code> of 5 and
+five paraphrases, a union can gather around 25 chunks before anything is trimmed. The
+<code>max_context_chunks</code> ceiling is what stops that quietly filling the context window.</div>
 
 <h2 id="gotchas">Things to remember</h2>
 
@@ -703,6 +992,17 @@ function.</div>
   improve answers more than a larger language model reading poor context would.</p>
   <p><strong>5. Grounding is not a guarantee.</strong> The model can still drift outside the context. Prompt it
   explicitly to say &ldquo;I don't know&rdquo; when the answer is not there.</p>
+  <p><strong>6. Deduplicate by chunk id, not by text.</strong> When several queries retrieve the same passage,
+  merging on the chunk's stored id is exact. Merging on the chunk's text looks equivalent and is not &mdash;
+  identical passages from different sources have different ids, and near-identical text can differ in
+  whitespace.</p>
+  <p><strong>7. A reasoning model will reason at you.</strong> If the model you use thinks out loud, its reply to
+  a &ldquo;give me three queries&rdquo; prompt may be a transcript rather than three queries. Turn thinking off
+  for these short generation steps, and parse the output into a clean list rather than trusting
+  <code>split("\n")</code>.</p>
+  <p><strong>8. Query transformation cannot invent a document.</strong> Every technique in Parts 5&ndash;9 is a
+  <em>retrieval</em> improvement. If the answer was never indexed, no amount of clever rewriting will surface it
+  &mdash; and a fabricated query passage (HyDE) must never be allowed to stand in for a real one.</p>
 </div>
 
 <h2 id="glossary">Glossary</h2>
@@ -714,8 +1014,20 @@ function.</div>
   <p><strong>Cosine similarity</strong> — a score from -1 to 1 for how similar two vectors are in direction.</p>
   <p><strong>Vector store</strong> — a collection of chunks and their vectors, built for nearest-neighbour search.</p>
   <p><strong>Top-k</strong> — the k most similar chunks returned for a query.</p>
-  <p><strong>Grounding</strong> — forcing the model to answer from the supplied context rather than from memory.</p>
-  <p><strong>Hallucination</strong> — a confident but unsupported or false model answer.</p>
+  <p><strong>Grounding</strong> &mdash; forcing the model to answer from the supplied context rather than from memory.</p>
+  <p><strong>Hallucination</strong> &mdash; a confident but unsupported or false model answer.</p>
+  <p><strong>Query transformation</strong> &mdash; rewriting, expanding or replacing the question before it is
+  embedded, to make retrieval find better chunks.</p>
+  <p><strong>Multi-Query</strong> &mdash; retrieve with several paraphrases of one question and take the unique
+  union of the results.</p>
+  <p><strong>Reciprocal Rank Fusion (RRF)</strong> &mdash; merging several ranked lists by giving each chunk
+  <code>1 / (rank + k)</code> points per list it appears in, so agreement between queries is rewarded.</p>
+  <p><strong>Decomposition</strong> &mdash; breaking one question into sub-questions that can each be answered
+  independently, then combining the answers.</p>
+  <p><strong>Step-back prompting</strong> &mdash; paraphrasing a question into a broader one, and retrieving with
+  both, for coverage the specific phrasing would miss.</p>
+  <p><strong>HyDE</strong> &mdash; generating a plausible but fictional answer passage and using its embedding
+  as the search query.</p>
 </div>
 
 <div class="credit">
@@ -728,7 +1040,8 @@ function.</div>
 
 <footer>
   <p>
-    Theory overview only — the runnable version lives in the notebook. Source:
+    Theory overview only &mdash; the runnable versions live in the notebooks, Parts&nbsp;1&ndash;4 and
+    Parts&nbsp;5&ndash;9. Source:
     <a href="https://github.com/itsmusa/open-rag">github.com/itsmusa/open-rag</a>.
   </p>
 </footer>

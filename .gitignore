@@ -11,7 +11,7 @@ __pycache__/
 index/
 
 # Local planning / scratch
-phase1-plan.md
+phases-plan.md
 docs/open-rag-stack.md
 
 # Local reference clone

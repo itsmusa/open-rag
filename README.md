@@ -11,7 +11,7 @@ GENERATE (query)    prompt template + context → LLM → answer
 
 ## Read the guide
 
-The full theory guide (Parts 1–4, with diagrams) is published as a website:
+The full theory guide (Parts 1–9, with diagrams) is published as a website:
 
 **→ https://itsmusa.github.io/open-rag/**
 
@@ -23,6 +23,16 @@ The full theory guide (Parts 1–4, with diagrams) is published as a website:
 | Images used by the guide | [`docs/assets/`](docs/assets/) |
 | The runnable implementation | [`notebooks/`](notebooks/) |
 | Dependencies | [`requirements.txt`](requirements.txt) |
+
+## The two notebooks
+
+| Notebook | Covers |
+|---|---|
+| `open_rag_from_scratch_1_to_4.ipynb` | The core chain — indexing, retrieval, generation, end to end |
+| `open_rag_from_scratch_5_to_9.ipynb` | Query transformations — multi-query, RAG-fusion, decomposition, step-back, HyDE |
+
+Parts 1–4 search with the user's question exactly as asked. Parts 5–9 improve *how you ask*: they rewrite the
+question into better search inputs, then run the same retrieve-and-generate chain unchanged.
 
 ## Setup
 
